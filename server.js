@@ -1,146 +1,107 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const { v4: uuidv4 } = require('uuid');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs-extra');
-const path = require('path');
-const cloudinary = require('cloudinary').v2;
-const axios = require('axios');
-require('dotenv').config();
+import express from 'express';
+import fetch from 'node-fetch';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs-extra';
+import path from 'path';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const app = express();
-app.use(bodyParser.json({ limit: '100mb' }));
+app.use(express.json());
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+const TMP_DIR    = path.resolve('./tmp');
+const OUTPUT_DIR = path.resolve('./output');
+await fs.ensureDir(TMP_DIR);
+await fs.ensureDir(OUTPUT_DIR);
 
-// Helper: ensure directory exists
-async function ensureDir(dir) {
-  await fs.ensureDir(dir);
-}
-
-// Helper: cut & burn subtitles
-function cutWithSubtitles(input, output, start, duration, srtPath) {
-  return new Promise((resolve, reject) => {
-    ffmpeg(input)
-      .setStartTime(start)
-      .setDuration(duration)
-      .outputOptions(`-vf subtitles=${srtPath}`)
-      .output(output)
-      .on('end', resolve)
-      .on('error', reject)
-      .run();
+// helper: הורדת URL ל־local file
+async function downloadFile(url, destPath) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to download ${url}: ${res.statusText}`);
+  const fileStream = fs.createWriteStream(destPath);
+  await new Promise((r, e) => {
+    res.body.pipe(fileStream);
+    res.body.on('error', e);
+    fileStream.on('finish', r);
   });
 }
 
-// Helper: write simple SRT file (one cue)
-async function writeSrt(srtPath, text, duration) {
-  const end   = new Date(duration * 1000).toISOString().substr(11, 12).replace('.', ',');
-  const srt   =
-    `1\n` +
-    `00:00:00,000 --> ${end}\n` +
-    `${text}\n`;
-  await fs.writeFile(srtPath, srt);
+// helper: יצירת קובץ SRT לכתוביות
+async function writeSrt(clip, destPath) {
+  const start = new Date(clip.start_time * 1000).toISOString().substr(11, 12).replace('.', ',');
+  const endMs = clip.start_time + clip.duration;
+  const end   = new Date(endMs * 1000).toISOString().substr(11, 12).replace('.', ',');
+  const srt  = `1
+${start} --> ${end}
+${clip.transcription_snippet || ''}
+
+`;
+  await fs.writeFile(destPath, srt, 'utf8');
 }
 
-// 1) Endpoint: receive clips instructions from Base44
 app.post('/api/create-clips', async (req, res) => {
   const { video_id, original_video_url, clips } = req.body;
-  const job_id = uuidv4();
-
-  const workdir      = path.join(__dirname, 'tmp', job_id);
-  const originalPath = path.join(workdir, `${video_id}.mp4`);
-  await ensureDir(workdir);
+  const jobId = `${video_id}_${Date.now()}`;
+  console.log(`▶️ Job ${jobId}: received ${clips.length} clips`);
 
   try {
-    // download original video
-    const resp = await axios({
-      url: original_video_url,
-      method: 'GET',
-      responseType: 'stream'
-    });
-    await new Promise((r, rej) => {
-      const ws = fs.createWriteStream(originalPath);
-      resp.data.pipe(ws);
-      ws.on('finish', r);
-      ws.on('error', rej);
-    });
-
-    const results = [];
-    // process each clip
-    for (const clip of clips) {
-      const { clip_id, start_time, end_time, transcription_snippet } = clip;
-      const dur       = end_time - start_time;
-      const clipMp4   = path.join(workdir, `${clip_id}.mp4`);
-      const clipSrt   = path.join(workdir, `${clip_id}.srt`);
-
-      // write SRT for this clip
-      await writeSrt(clipSrt, transcription_snippet, dur);
-
-      // cut & burn subtitles
-      await cutWithSubtitles(originalPath, clipMp4, start_time, dur, clipSrt);
-
-      // upload to Cloudinary
-      const uploadRes = await cloudinary.uploader.upload(clipMp4, {
-        resource_type: 'video',
-        folder: 'cliper_clips',
-        public_id: clip_id
-      });
-
-      results.push({
-        ...clip,
-        video_url: uploadRes.secure_url
-      });
-
-      // cleanup clip files
-      await fs.remove(clipMp4);
-      await fs.remove(clipSrt);
+    // 1) הורדת הווידאו בפעם הראשונה
+    const originalPath = path.join(TMP_DIR, `${video_id}.mp4`);
+    if (!await fs.pathExists(originalPath)) {
+      console.log('🔽 Downloading original video…');
+      await downloadFile(original_video_url, originalPath);
     }
 
-    // cleanup original
-    await fs.remove(originalPath);
+    // 2) לעבד כל קליפ
+    for (const clip of clips) {
+      const clipFile = path.join(OUTPUT_DIR, `${clip.clip_id}.mp4`);
+      const srtFile  = path.join(TMP_DIR, `${clip.clip_id}.srt`);
 
-    // callback to Base44
-    await axios.post(process.env.CALLBACK_URL, {
-      video_id,
-      job_id,
-      clips: results
-    });
+      console.log(`✂️ Cutting clip ${clip.clip_id}: ${clip.start_time}s → ${clip.duration}s`);
 
+      // 2a) תכתוב SRT
+      await writeSrt(clip, srtFile);
+
+      // 2b) ffmpeg: חיתוך + כתוביות
+      await new Promise((resolve, reject) => {
+        ffmpeg(originalPath)
+          .setStartTime(clip.start_time)
+          .setDuration(clip.duration)
+          .outputOptions(
+            '-vf', `subtitles=${srtFile}:force_style='FontName=Arial,FontSize=24'`
+          )
+          .output(clipFile)
+          .on('end', () => {
+            console.log(`✅ Clip ${clip.clip_id} ready at ${clipFile}`);
+            resolve();
+          })
+          .on('error', err => {
+            console.error(`❌ Failed processing ${clip.clip_id}:`, err);
+            reject(err);
+          })
+          .run();
+      });
+    }
+
+    // 3) תשוב מיד שהעבודה התחילה
     return res.json({
       success: true,
       message: 'Clips received and processing started',
-      job_id
+      job_id: jobId
     });
 
   } catch (err) {
-    console.error('Processing error:', err);
+    console.error('❌ /api/create-clips error:', err);
     return res.status(500).json({
       success: false,
-      message: 'Processing failed'
+      error: err.message
     });
   }
 });
 
-// 2) Endpoint: receive callback from Base44 (if needed)
-app.post('/api/externalCuttingCallback', (req, res) => {
-  console.log('📬 Callback received:', JSON.stringify(req.body, null,2));
-  // TODO: save to DB or notify user
-  res.json({ success: true });
-});
+app.get('/', (_req, res) => res.send('Cliper AI Server is Running'));
 
-// health check
-app.get('/', (req, res) => {
-  res.send('Cliper AI Server is live');
-});
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Listening on port ${PORT}`));
 
-// start
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 
