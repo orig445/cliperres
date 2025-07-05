@@ -1,62 +1,41 @@
 const express = require('express');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const { Readable } = require('stream');
-const dotenv = require('dotenv');
-dotenv.config();
+const fs = require('fs');
+require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 10000;
+const upload = multer({ dest: 'uploads/' });
 
-// קונפיגורציית Cloudinary
 cloudinary.config({
-  cloud_name: 'dcd825-05', // שים פה את ה-cloud_name שלך (מה-URL)
+  cloud_name: 'dktmo7zlx', // השם שלך מקלאודינרי
   api_key: '462451952435872',
   api_secret: process.env.CLOUDINARY_SECRET
 });
 
-// העלאת קבצים בזיכרון בלבד (ללא שמירה בדיסק)
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
-
 app.post('/upload', upload.single('video'), async (req, res) => {
   try {
-    const fileBuffer = req.file.buffer;
-    const fileName = req.file.originalname;
+    const path = req.file.path;
 
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        resource_type: 'video',
-        public_id: `clips/${Date.now()}_${fileName}`,
-      },
-      (error, result) => {
-        if (error) {
-          console.error('Upload error:', error);
-          return res.status(500).json({ error: 'Upload failed' });
-        }
-        res.json({ url: result.secure_url });
-      }
-    );
+    const result = await cloudinary.uploader.upload(path, {
+      resource_type: 'video',
+      folder: 'cliper',
+    });
 
-    Readable.from(fileBuffer).pipe(stream);
+    fs.unlinkSync(path); // מוחק את הקובץ המקומי אחרי העלאה
 
+    res.json({ url: result.secure_url });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('Cliper Server is running!');
+  res.send('Cliper AI Server is Running');
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
-;
-});
-
-// הרצת השרת
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
