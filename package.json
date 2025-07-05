@@ -1,12 +1,14 @@
 {
   "name": "cliper-server",
   "version": "1.0.0",
-  "description": "Simple Express server for Cliper",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "cloudinary": "^1.37.2",
+    "dotenv": "^16.3.1"
   }
 }
