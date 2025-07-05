@@ -1,32 +1,59 @@
 const express = require('express');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { Readable } = require('stream');
+const dotenv = require('dotenv');
+dotenv.config();
+
 const app = express();
-const PORT = process.env.PORT || 10000;
+const port = process.env.PORT || 10000;
 
-app.use(express.json());
+// קונפיגורציית Cloudinary
+cloudinary.config({
+  cloud_name: 'dcd825-05', // שים פה את ה-cloud_name שלך (מה-URL)
+  api_key: '462451952435872',
+  api_secret: process.env.CLOUDINARY_SECRET
+});
 
-// בדיקה פשוטה - שיראה שהשרת באוויר
+// העלאת קבצים בזיכרון בלבד (ללא שמירה בדיסק)
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+app.post('/upload', upload.single('video'), async (req, res) => {
+  try {
+    const fileBuffer = req.file.buffer;
+    const fileName = req.file.originalname;
+
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: 'video',
+        public_id: `clips/${Date.now()}_${fileName}`,
+      },
+      (error, result) => {
+        if (error) {
+          console.error('Upload error:', error);
+          return res.status(500).json({ error: 'Upload failed' });
+        }
+        res.json({ url: result.secure_url });
+      }
+    );
+
+    Readable.from(fileBuffer).pipe(stream);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Cliper Server is running!');
 });
 
-// ✅ זה הנתיב ש-Base44 שולחת אליו את כל המידע לעיבוד!
-app.post('/api/cut_video', (req, res) => {
-  console.log('📥 קיבלתי נתונים מ־Base44:');
-  console.log(JSON.stringify(req.body, null, 2));
-
-  // דמו של קליפים חתוכים לחזרה ל־Base44
-  const clips = req.body.clips_data.map((clip, index) => ({
-    id: index + 1,
-    title: clip.title,
-    file_url: `https://cliper-ai.onrender.com/videos/clip_${index + 1}.mp4`,
-    status: "completed"
-  }));
-
-  res.json({
-    job_id: "cliper-job-001",
-    status: "processing_started",
-    clips: clips
-  });
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+;
 });
 
 // הרצת השרת
