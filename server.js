@@ -1,24 +1,35 @@
 const express = require('express');
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(express.json());
 
-// דף הבית (סתם בדיקה)
+// בדיקה פשוטה - שיראה שהשרת באוויר
 app.get('/', (req, res) => {
   res.send('Cliper Server is running!');
 });
 
-// הנתיב ש-Base44 שולחת אליו את בקשת הוידאו
+// ✅ זה הנתיב ש-Base44 שולחת אליו את כל המידע לעיבוד!
 app.post('/api/cut_video', (req, res) => {
-  console.log('📥 בקשה מ-Base44 התקבלה!');
-  console.log(JSON.stringify(req.body, null, 2)); // מדפיס את כל הנתונים
+  console.log('📥 קיבלתי נתונים מ־Base44:');
+  console.log(JSON.stringify(req.body, null, 2));
 
-  // שלב עתידי: עיבוד וידאו אמיתי
+  // דמו של קליפים חתוכים לחזרה ל־Base44
+  const clips = req.body.clips_data.map((clip, index) => ({
+    id: index + 1,
+    title: clip.title,
+    file_url: `https://cliper-ai.onrender.com/videos/clip_${index + 1}.mp4`,
+    status: "completed"
+  }));
 
-  res.status(200).json({ status: 'ok', message: 'הבקשה התקבלה בהצלחה' });
+  res.json({
+    job_id: "cliper-job-001",
+    status: "processing_started",
+    clips: clips
+  });
 });
 
+// הרצת השרת
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
