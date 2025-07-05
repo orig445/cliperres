@@ -1,93 +1,86 @@
 const express = require('express');
-const fs = require('fs');
+const bodyParser = require('body-parser');
+const { v4: uuidv4 } = require('uuid');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs-extra');
 const path = require('path');
-const { exec } = require('child_process');
 const cloudinary = require('cloudinary').v2;
-const fetch = require('node-fetch');
-const axios = require('axios');
 require('dotenv').config();
+const axios = require('axios');
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
+app.use(bodyParser.json({ limit: '100mb' }));
 
 cloudinary.config({
-  cloud_name: 'dktmo7zlx',
-  api_key: '462451952435872',
-  api_secret: process.env.CLOUDINARY_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// פונקציית חיתוך
-const cutClip = (inputPath, outputPath, start, duration) => {
-  return new Promise((resolve, reject) => {
-    const cmd = `ffmpeg -i "${inputPath}" -ss ${start} -t ${duration} -c:v libx264 -c:a aac -strict experimental "${outputPath}"`;
-    exec(cmd, (error) => {
-      if (error) return reject(error);
-      resolve();
-    });
-  });
-};
+app.post('/api/create-clips', async (req, res) => {
+  const { video_id, original_video_url, clips } = req.body;
+  const job_id = uuidv4();
+  const tempPath = path.join(__dirname, 'temp');
+  await fs.ensureDir(tempPath);
+  const originalPath = path.join(tempPath, `${video_id}.mp4`);
 
-app.post('/api/cut_video', async (req, res) => {
   try {
-    const { video_file_url, clips_data, user_settings, base44_callback_url } = req.body;
-
-    const inputPath = `tmp/input_${Date.now()}.mp4`;
-    const writer = fs.createWriteStream(inputPath);
-    const response = await axios.get(video_file_url, { responseType: 'stream' });
+    const response = await axios({ url: original_video_url, method: 'GET', responseType: 'stream' });
+    const writer = fs.createWriteStream(originalPath);
     response.data.pipe(writer);
-    await new Promise((resolve) => writer.on('finish', resolve));
 
-    const uploadedClips = [];
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
 
-    for (const clip of clips_data) {
-      const start = clip.start;
-      const end = clip.end;
-      const duration = end - start;
-      const title = clip.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      const outputPath = `tmp/${title}_${Date.now()}.mp4`;
+    const results = [];
 
-      await cutClip(inputPath, outputPath, start, duration);
+    for (const clip of clips) {
+      const outputPath = path.join(tempPath, `${clip.clip_id}.mp4`);
+      await new Promise((resolve, reject) => {
+        ffmpeg(originalPath)
+          .setStartTime(clip.start_time)
+          .setDuration(clip.end_time - clip.start_time)
+          .output(outputPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
 
-      const result = await cloudinary.uploader.upload(outputPath, {
+      const uploaded = await cloudinary.uploader.upload(outputPath, {
         resource_type: 'video',
-        folder: 'clips',
+        folder: 'cliper_clips',
+        public_id: clip.clip_id,
       });
 
-      uploadedClips.push({
-        title: clip.title,
-        url: result.secure_url,
-        start,
-        end,
+      results.push({
+        ...clip,
+        video_url: uploaded.secure_url,
       });
 
-      fs.unlinkSync(outputPath);
+      await fs.remove(outputPath);
     }
 
-    fs.unlinkSync(inputPath);
+    await fs.remove(originalPath);
 
-    await fetch(base44_callback_url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'done',
-        clips: uploadedClips,
-      }),
+    await axios.post(process.env.CALLBACK_URL, {
+      video_id,
+      job_id,
+      clips: results,
     });
 
-    res.status(200).json({ message: 'All clips processed and sent back.' });
+    res.json({ success: true, message: 'Clips received and processing started', job_id });
   } catch (err) {
-    console.error('Error cutting video:', err);
-    res.status(500).json({ error: 'Processing failed.' });
+    console.error('Processing error:', err);
+    res.status(500).json({ success: false, message: 'Processing failed' });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('Cliper AI Server is Running');
+  res.send('Cliper AI Server is live');
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
