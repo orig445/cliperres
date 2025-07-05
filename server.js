@@ -8,7 +8,7 @@ const app = express();
 const upload = multer({ dest: 'uploads/' });
 
 cloudinary.config({
-  cloud_name: 'dktmo7zlx', // השם שלך מקלאודינרי
+  cloud_name: 'dktmo7zlx',
   api_key: '462451952435872',
   api_secret: process.env.CLOUDINARY_SECRET
 });
@@ -22,8 +22,7 @@ app.post('/upload', upload.single('video'), async (req, res) => {
       folder: 'cliper',
     });
 
-    fs.unlinkSync(path); // מוחק את הקובץ המקומי אחרי העלאה
-
+    fs.unlinkSync(path);
     res.json({ url: result.secure_url });
   } catch (err) {
     console.error('Upload error:', err);
@@ -39,3 +38,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
